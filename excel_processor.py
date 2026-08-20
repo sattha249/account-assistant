@@ -1,5 +1,6 @@
 import datetime
 import os
+import re
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -9,13 +10,19 @@ from utils import normalize_category_name, category_key, is_same_category
 def get_unique_sheet_name(wb: openpyxl.Workbook, base_name: str = "สรุปยอด") -> str:
     """
     Checks if base_name exists in workbook.
-    If it exists, appends timestamp (YYYYMMDD_HHMMSS) to ensure uniqueness.
+    If it exists, appends timestamp to ensure uniqueness while keeping title length <= 31 chars.
     """
+    if len(base_name) > 31:
+        base_name = base_name[:31]
+
     if base_name not in wb.sheetnames:
         return base_name
     
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    return f"{base_name}_({timestamp})"
+    suffix = f"_({timestamp})" # 19 chars
+    max_base_len = 31 - len(suffix) # 12 chars
+    truncated_base = base_name[:max_base_len]
+    return f"{truncated_base}{suffix}"
 
 
 def is_orange_fill(cell) -> bool:
@@ -66,6 +73,57 @@ def get_skipped_orange_rows(ws_sales: openpyxl.worksheet.worksheet.Worksheet, ma
                 skipped_rows.add(r)
                 
     return skipped_rows
+
+
+def parse_barn_string(barn_str, row_qty=None) -> list:
+    """
+    Parses barn strings such as 'T6=2 , T4=1 , T5=1', 'N1 , T6', '1F1=12 , 1F2=14', 'T13=1 รวมรก'.
+    Returns list of tuples: [(sub_barn_id, quantity), ...]
+    """
+    if not barn_str:
+        return []
+    parts = re.split(r'[,/]', str(barn_str))
+    parsed = []
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        m = re.search(r'([A-Za-z0-9]+)\s*=\s*(\d+)', p)
+        if m:
+            parsed.append((m.group(1).upper(), int(m.group(2))))
+        else:
+            m_simple = re.search(r'([A-Za-z0-9]+)', p)
+            if m_simple:
+                qty = int(row_qty) if (row_qty and isinstance(row_qty, (int, float)) and len(parts) == 1) else 1
+                parsed.append((m_simple.group(1).upper(), qty))
+    return parsed
+
+
+def get_main_barn_group(sub_barn: str) -> str:
+    """
+    Classifies a sub-barn ID into one of 3 main barn groups:
+    - 'กลุ่มเล้า T': Sub-barn starts with 'T' followed by digits (e.g. T1..T16)
+    - 'กลุ่มเล้า N': Sub-barn starts with 'N' followed by digits (e.g. N1..N8)
+    - 'กลุ่มเล้าอื่นๆ': Anything else (e.g. 1F1, 2F1, 1M5, 2M6, G1, Q, AI...)
+    """
+    sub = sub_barn.upper().strip()
+    if sub.startswith("T") and sub[1:].isdigit():
+        return "กลุ่มเล้า T"
+    elif sub.startswith("N") and sub[1:].isdigit():
+        return "กลุ่มเล้า N"
+    else:
+        return "กลุ่มเล้าอื่นๆ"
+
+
+def barn_sort_key(sub_barn: str) -> tuple:
+    """
+    Generates a natural sort key for sub-barns (e.g. T1, T2..T16, N1..N8, 1F1..2M6).
+    """
+    sub = sub_barn.upper().strip()
+    m = re.search(r'(\d+)', sub)
+    num = int(m.group(1)) if m else 0
+    alpha = re.sub(r'\d+', '', sub)
+    return (alpha, num, sub)
 
 
 def detect_weeks_and_categories(ws_sales: openpyxl.worksheet.worksheet.Worksheet) -> tuple:
@@ -163,10 +221,7 @@ def detect_weeks_and_categories(ws_sales: openpyxl.worksheet.worksheet.Worksheet
 def add_summary_sheet(file_path: str) -> dict:
     """
     Processes the specified Excel file, creates a styled multi-column weekly matrix 'สรุปยอด' sheet,
-    linking formulas dynamically per week block and date range.
-    
-    Includes Orange Fill Duplicate Exclusion Rule:
-    Skips rows filled with Orange if adjacent row (prev or next) has the same Date and Quantity.
+    linking formulas dynamically per week block and date range. (Menu 1)
     """
     if not os.path.exists(file_path):
         return {
@@ -211,8 +266,8 @@ def add_summary_sheet(file_path: str) -> dict:
         font_data = Font(name="Calibri", size=11, bold=False, color="000000")
         font_total = Font(name="Calibri", size=11, bold=True, color="000000")
 
-        fill_header_1 = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid") # Light Blue Accent
-        fill_header_2 = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid") # Light Gray Accent
+        fill_header_1 = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
+        fill_header_2 = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
 
         thin_side = Side(border_style="thin", color="D9D9D9")
         thick_side = Side(border_style="medium", color="000000")
@@ -288,7 +343,6 @@ def add_summary_sheet(file_path: str) -> dict:
                 start_r = wk["start_row"]
                 end_r = wk["end_row"]
                 
-                # Collect valid transaction row references for this category and week block
                 valid_cell_refs = []
                 for r in range(start_r, end_r + 1):
                     if r in skipped_orange_rows:
@@ -313,7 +367,6 @@ def add_summary_sheet(file_path: str) -> dict:
 
                 col_idx += 1
 
-            # Total column for row (Sum of week columns B..last_week_col)
             last_wk_col_letter = get_column_letter(col_idx - 1)
             c_row_total = ws_summary.cell(row=current_row, column=col_idx)
             c_row_total.font = font_total
@@ -342,7 +395,6 @@ def add_summary_sheet(file_path: str) -> dict:
             c_col_tot.value = f"=SUM({col_letter}3:{col_letter}{last_data_row})"
             col_idx += 1
 
-        # Total of all totals (bottom-right cell)
         total_col_letter = get_column_letter(col_idx)
         c_grand_tot = ws_summary.cell(row=current_row, column=col_idx)
         c_grand_tot.font = font_total
@@ -371,5 +423,246 @@ def add_summary_sheet(file_path: str) -> dict:
         return {
             "success": False,
             "error": f"เกิดข้อผิดพลาดในการสร้างชีทสรุปยอด: {str(e)}",
+            "sheet_name": None
+        }
+
+
+def add_barn_summary_sheet(file_path: str) -> dict:
+    """
+    Processes the specified Excel file and creates a styled 'สรุปยอดแยกเล้า' sheet (Menu 2).
+    Classifies sales data by 3 Main Barn Groups ('กลุ่มเล้า T', 'กลุ่มเล้า N', 'กลุ่มเล้าอื่นๆ')
+    and sub-barns (T1, T2... N1, N2... 1F1, 2M6...), formatting distinct tables with sum formulas.
+    """
+    if not os.path.exists(file_path):
+        return {
+            "success": False,
+            "error": f"ไม่พบไฟล์: {file_path}",
+            "sheet_name": None,
+        }
+
+    try:
+        wb = openpyxl.load_workbook(file_path)
+
+        if "ขาย" not in wb.sheetnames:
+            return {
+                "success": False,
+                "error": "ไม่พบชีท 'ขาย' ในไฟล์ Excel ที่ระบุ",
+                "sheet_name": None,
+            }
+
+        ws_sales = wb["ขาย"]
+        max_r = ws_sales.max_row
+
+        # Detect skipped orange duplicate rows
+        skipped_orange_rows = get_skipped_orange_rows(ws_sales, max_r)
+
+        # Structure to aggregate: data_matrix[main_group][sub_barn][category_key] = count
+        data_matrix = {}
+        all_categories = []
+        seen_cat_keys = set()
+
+        for r in range(2, max_r + 1):
+            if r in skipped_orange_rows:
+                continue
+
+            barn_str = ws_sales.cell(row=r, column=14).value # Column N: เล้า
+            c_val = ws_sales.cell(row=r, column=5).value     # Column E: ประเภท
+            q_val = ws_sales.cell(row=r, column=4).value     # Column D: จำนวนตัว
+
+            clean_cat = normalize_category_name(c_val)
+            c_key = category_key(clean_cat)
+
+            if not clean_cat or c_key in ("รวม", "ประเภท", "วันที่", "ชื่อลูกค้า"):
+                continue
+
+            if c_key not in seen_cat_keys:
+                seen_cat_keys.add(c_key)
+                all_categories.append({
+                    "name": clean_cat,
+                    "key": c_key
+                })
+
+            parsed_barns = parse_barn_string(barn_str, q_val)
+            for sub_b, b_qty in parsed_barns:
+                main_grp = get_main_barn_group(sub_b)
+                if main_grp not in data_matrix:
+                    data_matrix[main_grp] = {}
+                if sub_b not in data_matrix[main_grp]:
+                    data_matrix[main_grp][sub_b] = {}
+                if c_key not in data_matrix[main_grp][sub_b]:
+                    data_matrix[main_grp][sub_b][c_key] = 0
+                data_matrix[main_grp][sub_b][c_key] += b_qty
+
+        if not data_matrix:
+            return {
+                "success": False,
+                "error": "ไม่พบข้อมูลเล้าและจำนวนตัวในคอลัมน์ N ของชีท 'ขาย'",
+                "sheet_name": None
+            }
+
+        # Target sheet name
+        target_sheet_name = get_unique_sheet_name(wb, "สรุปยอดแยกเล้า")
+        ws_barn = wb.create_sheet(title=target_sheet_name)
+
+        # Styles
+        font_banner = Font(name="Calibri", size=12, bold=True, color="FFFFFF")
+        font_hdr = Font(name="Calibri", size=11, bold=True, color="000000")
+        font_data = Font(name="Calibri", size=11, bold=False, color="000000")
+        font_tot = Font(name="Calibri", size=11, bold=True, color="000000")
+
+        fill_banner = PatternFill(start_color="1F497D", end_color="1F497D", fill_type="solid") # Dark Navy Banner
+        fill_hdr = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")    # Light Blue Accent
+        fill_zebra = PatternFill(start_color="F9FBFD", end_color="F9FBFD", fill_type="solid")  # Soft Zebra
+
+        thin_side = Side(border_style="thin", color="D9D9D9")
+        thick_side = Side(border_style="medium", color="000000")
+        double_side = Side(border_style="double", color="000000")
+
+        border_cell = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+        border_tot = Border(left=thin_side, right=thin_side, top=thin_side, bottom=double_side)
+
+        align_center = Alignment(horizontal="center", vertical="center")
+        align_left = Alignment(horizontal="left", vertical="center")
+        align_right = Alignment(horizontal="right", vertical="center")
+
+        num_format = "#,##0"
+        main_groups_order = ["กลุ่มเล้า T", "กลุ่มเล้า N", "กลุ่มเล้าอื่นๆ"]
+
+        current_row = 1
+        max_col_width_a = 14
+
+        for main_grp in main_groups_order:
+            if main_grp not in data_matrix:
+                continue
+
+            sub_barns = sorted(data_matrix[main_grp].keys(), key=barn_sort_key)
+            if not sub_barns:
+                continue
+
+            # Display ALL categories across every main barn group table for consistent layout
+            grp_categories = all_categories
+
+            tot_table_cols = 1 + len(grp_categories) + 1 # SubBarn + Categories + Total
+
+            # 1. Main Group Banner Row
+            ws_barn.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=tot_table_cols)
+            banner_cell = ws_barn.cell(row=current_row, column=1, value=f"[ {main_grp} ]")
+            banner_cell.font = font_banner
+            banner_cell.fill = fill_banner
+            banner_cell.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+            ws_barn.row_dimensions[current_row].height = 24
+            current_row += 1
+
+            # 2. Table Header Row
+            c_hdr_sub = ws_barn.cell(row=current_row, column=1, value="เล้า")
+            c_hdr_sub.font = font_hdr
+            c_hdr_sub.fill = fill_hdr
+            c_hdr_sub.alignment = align_center
+            c_hdr_sub.border = Border(left=thick_side, right=thin_side, top=thick_side, bottom=thick_side)
+
+            c_col = 2
+            for cat in grp_categories:
+                cell = ws_barn.cell(row=current_row, column=c_col, value=cat["name"])
+                cell.font = font_hdr
+                cell.fill = fill_hdr
+                cell.alignment = align_center
+                cell.border = Border(left=thin_side, right=thin_side, top=thick_side, bottom=thick_side)
+                c_col += 1
+
+            c_hdr_tot = ws_barn.cell(row=current_row, column=c_col, value="รวม")
+            c_hdr_tot.font = font_hdr
+            c_hdr_tot.fill = fill_hdr
+            c_hdr_tot.alignment = align_center
+            c_hdr_tot.border = Border(left=thin_side, right=thick_side, top=thick_side, bottom=thick_side)
+
+            current_row += 1
+            table_data_start_row = current_row
+
+            # 3. Sub-Barn Data Rows
+            for idx, sb in enumerate(sub_barns):
+                c_sb = ws_barn.cell(row=current_row, column=1, value=sb)
+                c_sb.font = font_hdr
+                c_sb.alignment = align_center
+                c_sb.border = border_cell
+
+                max_col_width_a = max(max_col_width_a, len(sb) + 6)
+                is_even = (idx % 2 == 0)
+
+                c_col = 2
+                for cat in grp_categories:
+                    qty = data_matrix[main_grp][sb].get(cat["key"], 0)
+                    cell = ws_barn.cell(row=current_row, column=c_col, value=qty)
+                    cell.font = font_data
+                    cell.alignment = align_right
+                    cell.number_format = num_format
+                    cell.border = border_cell
+                    if is_even:
+                        cell.fill = fill_zebra
+                    c_col += 1
+
+                # Horizontal Row Total Formula
+                last_cat_letter = get_column_letter(c_col - 1)
+                c_row_tot = ws_barn.cell(row=current_row, column=c_col)
+                c_row_tot.font = font_tot
+                c_row_tot.alignment = align_right
+                c_row_tot.number_format = num_format
+                c_row_tot.border = border_cell
+                c_row_tot.value = f"=SUM(B{current_row}:{last_cat_letter}{current_row})"
+                if is_even:
+                    c_row_tot.fill = fill_zebra
+
+                current_row += 1
+
+            table_data_end_row = current_row - 1
+
+            # 4. Table Bottom Total Row
+            c_grp_tot_label = ws_barn.cell(row=current_row, column=1, value="รวม")
+            c_grp_tot_label.font = font_tot
+            c_grp_tot_label.alignment = align_center
+            c_grp_tot_label.border = border_tot
+
+            c_col = 2
+            for cat in grp_categories:
+                col_let = get_column_letter(c_col)
+                c_tot_cell = ws_barn.cell(row=current_row, column=c_col)
+                c_tot_cell.font = font_tot
+                c_tot_cell.alignment = align_right
+                c_tot_cell.number_format = num_format
+                c_tot_cell.border = border_tot
+                c_tot_cell.value = f"=SUM({col_let}{table_data_start_row}:{col_let}{table_data_end_row})"
+                c_col += 1
+
+            # Group Grand Total
+            last_cat_letter = get_column_letter(c_col - 1)
+            total_col_letter = get_column_letter(c_col)
+            c_grp_grand = ws_barn.cell(row=current_row, column=c_col)
+            c_grp_grand.font = font_tot
+            c_grp_grand.alignment = align_right
+            c_grp_grand.number_format = num_format
+            c_grp_grand.border = border_tot
+            c_grp_grand.value = f"=SUM({total_col_letter}{table_data_start_row}:{total_col_letter}{table_data_end_row})"
+
+            # Spacer rows between main group tables
+            current_row += 3
+
+        # Column Widths
+        ws_barn.column_dimensions['A'].width = max(18, max_col_width_a)
+        for c in range(2, 20):
+            c_let = get_column_letter(c)
+            ws_barn.column_dimensions[c_let].width = 16
+
+        wb.save(file_path)
+
+        return {
+            "success": True,
+            "sheet_name": target_sheet_name,
+            "file_path": file_path,
+            "error": None
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"เกิดข้อผิดพลาดในการสร้างชีทสรุปยอดแยกเล้า: {str(e)}",
             "sheet_name": None
         }
