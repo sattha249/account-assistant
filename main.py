@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import sys
 import os
+import argparse
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -18,7 +19,7 @@ def find_excel_files():
 
 
 def display_header():
-    """Displays application banner."""
+    """Displays application banner in console."""
     console.clear()
     banner = Text("ระบบผู้ช่วยบัญชีและฟาร์มสุกร (Account Assistant TUI)", style="bold white on blue", justify="center")
     console.print(Panel(banner, border_style="bright_blue", title="[bold yellow]Pig Farm Accounting System[/bold yellow]"))
@@ -173,5 +174,24 @@ def main_menu():
             sys.exit(0)
 
 
+def main():
+    parser = argparse.ArgumentParser(description="Pig Farm Accounting System (Account Assistant)")
+    parser.add_argument("--tui", action="store_true", help="Launch in Terminal UI mode")
+    parser.add_argument("--gui", action="store_true", help="Launch in Graphical User Interface (GUI) mode")
+    
+    args, unknown = parser.parse_known_args()
+    
+    if args.tui:
+        main_menu()
+    else:
+        # Default mode is GUI
+        try:
+            import gui
+            gui.launch_gui()
+        except Exception as e:
+            console.print(f"[bold yellow]คำเตือน: ไม่สามารถเปิดโหมด GUI ได้ ({str(e)}) ระบบจะสลับไปใช้ TUI แทน[/bold yellow]")
+            main_menu()
+
+
 if __name__ == "__main__":
-    main_menu()
+    main()

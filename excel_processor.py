@@ -7,22 +7,14 @@ from openpyxl.utils import get_column_letter
 from utils import normalize_category_name, category_key, is_same_category
 
 
-def get_unique_sheet_name(wb: openpyxl.Workbook, base_name: str = "สรุปยอด") -> str:
+def prepare_target_sheet(wb: openpyxl.Workbook, base_name: str) -> openpyxl.worksheet.worksheet.Worksheet:
     """
-    Checks if base_name exists in workbook.
-    If it exists, appends timestamp to ensure uniqueness while keeping title length <= 31 chars.
+    If sheet with base_name exists in workbook, deletes/replaces it directly.
+    Returns new worksheet created with title base_name.
     """
-    if len(base_name) > 31:
-        base_name = base_name[:31]
-
-    if base_name not in wb.sheetnames:
-        return base_name
-    
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    suffix = f"_({timestamp})" # 19 chars
-    max_base_len = 31 - len(suffix) # 12 chars
-    truncated_base = base_name[:max_base_len]
-    return f"{truncated_base}{suffix}"
+    if base_name in wb.sheetnames:
+        del wb[base_name]
+    return wb.create_sheet(title=base_name)
 
 
 def is_orange_fill(cell) -> bool:
@@ -220,7 +212,7 @@ def detect_weeks_and_categories(ws_sales: openpyxl.worksheet.worksheet.Worksheet
 
 def add_summary_sheet(file_path: str) -> dict:
     """
-    Processes the specified Excel file, creates a styled multi-column weekly matrix 'สรุปยอด' sheet,
+    Processes the specified Excel file, creates/replaces a styled multi-column weekly matrix 'สรุปยอด' sheet,
     linking formulas dynamically per week block and date range. (Menu 1)
     """
     if not os.path.exists(file_path):
@@ -256,9 +248,9 @@ def add_summary_sheet(file_path: str) -> dict:
                 "sheet_name": None
             }
 
-        # Determine target sheet name
-        target_sheet_name = get_unique_sheet_name(wb, "สรุปยอด")
-        ws_summary = wb.create_sheet(title=target_sheet_name)
+        # Replaces existing 'สรุปยอด' sheet if present
+        target_sheet_name = "สรุปยอด"
+        ws_summary = prepare_target_sheet(wb, target_sheet_name)
 
         # Styles
         font_header_1 = Font(name="Calibri", size=11, bold=True, color="000000")
@@ -429,7 +421,7 @@ def add_summary_sheet(file_path: str) -> dict:
 
 def add_barn_summary_sheet(file_path: str) -> dict:
     """
-    Processes the specified Excel file and creates a styled 'สรุปยอดแยกเล้า' sheet (Menu 2).
+    Processes the specified Excel file and creates/replaces a styled 'สรุปยอดแยกเล้า' sheet (Menu 2).
     Generates a Weekly Matrix breakdown where EACH week contains 3 Main Barn Tables:
     1. กลุ่มเล้า T (T1..T16)
     2. กลุ่มเล้า N (N1..N8)
@@ -502,9 +494,9 @@ def add_barn_summary_sheet(file_path: str) -> dict:
                         weekly_data[wk["name"]][main_grp][sub_b][c_key] = 0
                     weekly_data[wk["name"]][main_grp][sub_b][c_key] += b_qty
 
-        # Target sheet name
-        target_sheet_name = get_unique_sheet_name(wb, "สรุปยอดแยกเล้า")
-        ws_barn = wb.create_sheet(title=target_sheet_name)
+        # Replaces existing 'สรุปยอดแยกเล้า' sheet if present
+        target_sheet_name = "สรุปยอดแยกเล้า"
+        ws_barn = prepare_target_sheet(wb, target_sheet_name)
 
         # Styles
         font_wk_banner = Font(name="Calibri", size=13, bold=True, color="FFFFFF")
