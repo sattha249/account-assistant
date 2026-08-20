@@ -430,8 +430,15 @@ def add_summary_sheet(file_path: str) -> dict:
 def add_barn_summary_sheet(file_path: str) -> dict:
     """
     Processes the specified Excel file and creates a styled 'สรุปยอดแยกเล้า' sheet (Menu 2).
-    Classifies sales data by 3 Main Barn Groups ('กลุ่มเล้า T', 'กลุ่มเล้า N', 'กลุ่มเล้าอื่นๆ')
-    and sub-barns (T1, T2... N1, N2... 1F1, 2M6...), formatting distinct tables with sum formulas.
+    Generates a Weekly Matrix breakdown where EACH week contains 3 Main Barn Tables:
+    1. กลุ่มเล้า T (T1..T16)
+    2. กลุ่มเล้า N (N1..N8)
+    3. กลุ่มเล้าอื่นๆ (1F1, 2F1, 1M5, 2M6, G1, Q, AI...)
+    
+    AT THE END OF EACH WEEK: Inserts ONE SINGLE SUMMARY ROW ('รวมทุกเล้าประจำสัปดาห์') 
+    summing up all barns in that week, broken down by category!
+    Includes Orange Fill Duplicate Row Exclusion Rule.
+    Includes all categories in every table, defaulting to 0 for empty cells.
     """
     if not os.path.exists(file_path):
         return {
@@ -456,63 +463,62 @@ def add_barn_summary_sheet(file_path: str) -> dict:
         # Detect skipped orange duplicate rows
         skipped_orange_rows = get_skipped_orange_rows(ws_sales, max_r)
 
-        # Structure to aggregate: data_matrix[main_group][sub_barn][category_key] = count
-        data_matrix = {}
-        all_categories = []
-        seen_cat_keys = set()
+        # Detect weeks and all categories dynamically
+        weeks, categories = detect_weeks_and_categories(ws_sales)
 
-        for r in range(2, max_r + 1):
-            if r in skipped_orange_rows:
-                continue
-
-            barn_str = ws_sales.cell(row=r, column=14).value # Column N: เล้า
-            c_val = ws_sales.cell(row=r, column=5).value     # Column E: ประเภท
-            q_val = ws_sales.cell(row=r, column=4).value     # Column D: จำนวนตัว
-
-            clean_cat = normalize_category_name(c_val)
-            c_key = category_key(clean_cat)
-
-            if not clean_cat or c_key in ("รวม", "ประเภท", "วันที่", "ชื่อลูกค้า"):
-                continue
-
-            if c_key not in seen_cat_keys:
-                seen_cat_keys.add(c_key)
-                all_categories.append({
-                    "name": clean_cat,
-                    "key": c_key
-                })
-
-            parsed_barns = parse_barn_string(barn_str, q_val)
-            for sub_b, b_qty in parsed_barns:
-                main_grp = get_main_barn_group(sub_b)
-                if main_grp not in data_matrix:
-                    data_matrix[main_grp] = {}
-                if sub_b not in data_matrix[main_grp]:
-                    data_matrix[main_grp][sub_b] = {}
-                if c_key not in data_matrix[main_grp][sub_b]:
-                    data_matrix[main_grp][sub_b][c_key] = 0
-                data_matrix[main_grp][sub_b][c_key] += b_qty
-
-        if not data_matrix:
+        if not categories:
             return {
                 "success": False,
-                "error": "ไม่พบข้อมูลเล้าและจำนวนตัวในคอลัมน์ N ของชีท 'ขาย'",
+                "error": "ไม่พบประเภทสินค้าในคอลัมน์ E ของชีท 'ขาย'",
                 "sheet_name": None
             }
+
+        # Structure: weekly_data[wk_name][main_group][sub_barn][category_key] = count
+        weekly_data = {}
+        for wk in weeks:
+            weekly_data[wk["name"]] = {}
+            for r in range(wk["start_row"], wk["end_row"] + 1):
+                if r in skipped_orange_rows:
+                    continue
+
+                barn_str = ws_sales.cell(row=r, column=14).value # Column N: เล้า
+                c_val = ws_sales.cell(row=r, column=5).value     # Column E: ประเภท
+                q_val = ws_sales.cell(row=r, column=4).value     # Column D: จำนวนตัว
+
+                clean_cat = normalize_category_name(c_val)
+                c_key = category_key(clean_cat)
+
+                if not clean_cat or c_key in ("รวม", "ประเภท", "วันที่", "ชื่อลูกค้า"):
+                    continue
+
+                parsed_barns = parse_barn_string(barn_str, q_val)
+                for sub_b, b_qty in parsed_barns:
+                    main_grp = get_main_barn_group(sub_b)
+                    if main_grp not in weekly_data[wk["name"]]:
+                        weekly_data[wk["name"]][main_grp] = {}
+                    if sub_b not in weekly_data[wk["name"]][main_grp]:
+                        weekly_data[wk["name"]][main_grp][sub_b] = {}
+                    if c_key not in weekly_data[wk["name"]][main_grp][sub_b]:
+                        weekly_data[wk["name"]][main_grp][sub_b][c_key] = 0
+                    weekly_data[wk["name"]][main_grp][sub_b][c_key] += b_qty
 
         # Target sheet name
         target_sheet_name = get_unique_sheet_name(wb, "สรุปยอดแยกเล้า")
         ws_barn = wb.create_sheet(title=target_sheet_name)
 
         # Styles
-        font_banner = Font(name="Calibri", size=12, bold=True, color="FFFFFF")
+        font_wk_banner = Font(name="Calibri", size=13, bold=True, color="FFFFFF")
+        font_banner = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
         font_hdr = Font(name="Calibri", size=11, bold=True, color="000000")
         font_data = Font(name="Calibri", size=11, bold=False, color="000000")
         font_tot = Font(name="Calibri", size=11, bold=True, color="000000")
+        font_wk_tot = Font(name="Calibri", size=11, bold=True, color="000000")
 
-        fill_banner = PatternFill(start_color="1F497D", end_color="1F497D", fill_type="solid") # Dark Navy Banner
-        fill_hdr = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")    # Light Blue Accent
-        fill_zebra = PatternFill(start_color="F9FBFD", end_color="F9FBFD", fill_type="solid")  # Soft Zebra
+        fill_wk_banner = PatternFill(start_color="1F497D", end_color="1F497D", fill_type="solid") # Dark Navy Week Banner
+        fill_banner = PatternFill(start_color="2F5597", end_color="2F5597", fill_type="solid")    # Medium Blue Barn Group Banner
+        fill_hdr = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")       # Light Blue Table Header
+        fill_zebra = PatternFill(start_color="F9FBFD", end_color="F9FBFD", fill_type="solid")     # Soft Zebra
+        fill_wk_tot = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")    # Warm Gold Fill for Single Week Summary Row
 
         thin_side = Side(border_style="thin", color="D9D9D9")
         thick_side = Side(border_style="medium", color="000000")
@@ -520,6 +526,7 @@ def add_barn_summary_sheet(file_path: str) -> dict:
 
         border_cell = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
         border_tot = Border(left=thin_side, right=thin_side, top=thin_side, bottom=double_side)
+        border_wk_tot = Border(left=thick_side, right=thick_side, top=thick_side, bottom=double_side)
 
         align_center = Alignment(horizontal="center", vertical="center")
         align_left = Alignment(horizontal="left", vertical="center")
@@ -527,127 +534,177 @@ def add_barn_summary_sheet(file_path: str) -> dict:
 
         num_format = "#,##0"
         main_groups_order = ["กลุ่มเล้า T", "กลุ่มเล้า N", "กลุ่มเล้าอื่นๆ"]
+        tot_table_cols = 1 + len(categories) + 1 # SubBarn + Categories + Total
 
         current_row = 1
         max_col_width_a = 14
 
-        for main_grp in main_groups_order:
-            if main_grp not in data_matrix:
-                continue
-
-            sub_barns = sorted(data_matrix[main_grp].keys(), key=barn_sort_key)
-            if not sub_barns:
-                continue
-
-            # Display ALL categories across every main barn group table for consistent layout
-            grp_categories = all_categories
-
-            tot_table_cols = 1 + len(grp_categories) + 1 # SubBarn + Categories + Total
-
-            # 1. Main Group Banner Row
+        for wk in weeks:
+            wk_name = wk["name"]
+            date_range = wk["date_range"]
+            week_group_total_rows = [] # Track total row indices of T, N, Other barn tables for this week
+            
+            # 1. Week Header Banner Row
             ws_barn.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=tot_table_cols)
-            banner_cell = ws_barn.cell(row=current_row, column=1, value=f"[ {main_grp} ]")
-            banner_cell.font = font_banner
-            banner_cell.fill = fill_banner
-            banner_cell.alignment = Alignment(horizontal="left", vertical="center", indent=1)
-            ws_barn.row_dimensions[current_row].height = 24
+            wk_banner_cell = ws_barn.cell(row=current_row, column=1, value=f"[ {wk_name}  (ช่วงวันที่ {date_range}) ]")
+            wk_banner_cell.font = font_wk_banner
+            wk_banner_cell.fill = fill_wk_banner
+            wk_banner_cell.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+            ws_barn.row_dimensions[current_row].height = 26
             current_row += 1
 
-            # 2. Table Header Row
-            c_hdr_sub = ws_barn.cell(row=current_row, column=1, value="เล้า")
-            c_hdr_sub.font = font_hdr
-            c_hdr_sub.fill = fill_hdr
-            c_hdr_sub.alignment = align_center
-            c_hdr_sub.border = Border(left=thick_side, right=thin_side, top=thick_side, bottom=thick_side)
+            for main_grp in main_groups_order:
+                if main_grp not in weekly_data[wk_name]:
+                    continue
 
-            c_col = 2
-            for cat in grp_categories:
-                cell = ws_barn.cell(row=current_row, column=c_col, value=cat["name"])
-                cell.font = font_hdr
-                cell.fill = fill_hdr
-                cell.alignment = align_center
-                cell.border = Border(left=thin_side, right=thin_side, top=thick_side, bottom=thick_side)
-                c_col += 1
+                sub_barns = sorted(weekly_data[wk_name][main_grp].keys(), key=barn_sort_key)
+                if not sub_barns:
+                    continue
 
-            c_hdr_tot = ws_barn.cell(row=current_row, column=c_col, value="รวม")
-            c_hdr_tot.font = font_hdr
-            c_hdr_tot.fill = fill_hdr
-            c_hdr_tot.alignment = align_center
-            c_hdr_tot.border = Border(left=thin_side, right=thick_side, top=thick_side, bottom=thick_side)
+                # 2. Main Group Banner Row
+                ws_barn.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=tot_table_cols)
+                banner_cell = ws_barn.cell(row=current_row, column=1, value=f"  [ {main_grp} ]")
+                banner_cell.font = font_banner
+                banner_cell.fill = fill_banner
+                banner_cell.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+                ws_barn.row_dimensions[current_row].height = 22
+                current_row += 1
 
-            current_row += 1
-            table_data_start_row = current_row
-
-            # 3. Sub-Barn Data Rows
-            for idx, sb in enumerate(sub_barns):
-                c_sb = ws_barn.cell(row=current_row, column=1, value=sb)
-                c_sb.font = font_hdr
-                c_sb.alignment = align_center
-                c_sb.border = border_cell
-
-                max_col_width_a = max(max_col_width_a, len(sb) + 6)
-                is_even = (idx % 2 == 0)
+                # 3. Table Header Row
+                c_hdr_sub = ws_barn.cell(row=current_row, column=1, value="เล้า")
+                c_hdr_sub.font = font_hdr
+                c_hdr_sub.fill = fill_hdr
+                c_hdr_sub.alignment = align_center
+                c_hdr_sub.border = Border(left=thick_side, right=thin_side, top=thick_side, bottom=thick_side)
 
                 c_col = 2
-                for cat in grp_categories:
-                    qty = data_matrix[main_grp][sb].get(cat["key"], 0)
-                    cell = ws_barn.cell(row=current_row, column=c_col, value=qty)
-                    cell.font = font_data
-                    cell.alignment = align_right
-                    cell.number_format = num_format
-                    cell.border = border_cell
-                    if is_even:
-                        cell.fill = fill_zebra
+                for cat in categories:
+                    cell = ws_barn.cell(row=current_row, column=c_col, value=cat["name"])
+                    cell.font = font_hdr
+                    cell.fill = fill_hdr
+                    cell.alignment = align_center
+                    cell.border = Border(left=thin_side, right=thin_side, top=thick_side, bottom=thick_side)
                     c_col += 1
 
-                # Horizontal Row Total Formula
+                c_hdr_tot = ws_barn.cell(row=current_row, column=c_col, value="รวม")
+                c_hdr_tot.font = font_hdr
+                c_hdr_tot.fill = fill_hdr
+                c_hdr_tot.alignment = align_center
+                c_hdr_tot.border = Border(left=thin_side, right=thick_side, top=thick_side, bottom=thick_side)
+
+                current_row += 1
+                table_data_start_row = current_row
+
+                # 4. Sub-Barn Data Rows
+                for idx, sb in enumerate(sub_barns):
+                    c_sb = ws_barn.cell(row=current_row, column=1, value=sb)
+                    c_sb.font = font_hdr
+                    c_sb.alignment = align_center
+                    c_sb.border = border_cell
+
+                    max_col_width_a = max(max_col_width_a, len(sb) + 6)
+                    is_even = (idx % 2 == 0)
+
+                    c_col = 2
+                    for cat in categories:
+                        qty = weekly_data[wk_name][main_grp][sb].get(cat["key"], 0)
+                        cell = ws_barn.cell(row=current_row, column=c_col, value=qty)
+                        cell.font = font_data
+                        cell.alignment = align_right
+                        cell.number_format = num_format
+                        cell.border = border_cell
+                        if is_even:
+                            cell.fill = fill_zebra
+                        c_col += 1
+
+                    # Horizontal Row Total Formula
+                    last_cat_letter = get_column_letter(c_col - 1)
+                    c_row_tot = ws_barn.cell(row=current_row, column=c_col)
+                    c_row_tot.font = font_tot
+                    c_row_tot.alignment = align_right
+                    c_row_tot.number_format = num_format
+                    c_row_tot.border = border_cell
+                    c_row_tot.value = f"=SUM(B{current_row}:{last_cat_letter}{current_row})"
+                    if is_even:
+                        c_row_tot.fill = fill_zebra
+
+                    current_row += 1
+
+                table_data_end_row = current_row - 1
+
+                # 5. Table Bottom Total Row
+                c_grp_tot_label = ws_barn.cell(row=current_row, column=1, value="รวม")
+                c_grp_tot_label.font = font_tot
+                c_grp_tot_label.alignment = align_center
+                c_grp_tot_label.border = border_tot
+
+                c_col = 2
+                for cat in categories:
+                    col_let = get_column_letter(c_col)
+                    c_tot_cell = ws_barn.cell(row=current_row, column=c_col)
+                    c_tot_cell.font = font_tot
+                    c_tot_cell.alignment = align_right
+                    c_tot_cell.number_format = num_format
+                    c_tot_cell.border = border_tot
+                    c_tot_cell.value = f"=SUM({col_let}{table_data_start_row}:{col_let}{table_data_end_row})"
+                    c_col += 1
+
+                # Group Grand Total
                 last_cat_letter = get_column_letter(c_col - 1)
-                c_row_tot = ws_barn.cell(row=current_row, column=c_col)
-                c_row_tot.font = font_tot
-                c_row_tot.alignment = align_right
-                c_row_tot.number_format = num_format
-                c_row_tot.border = border_cell
-                c_row_tot.value = f"=SUM(B{current_row}:{last_cat_letter}{current_row})"
-                if is_even:
-                    c_row_tot.fill = fill_zebra
+                total_col_letter = get_column_letter(c_col)
+                c_grp_grand = ws_barn.cell(row=current_row, column=c_col)
+                c_grp_grand.font = font_tot
+                c_grp_grand.alignment = align_right
+                c_grp_grand.number_format = num_format
+                c_grp_grand.border = border_tot
+                c_grp_grand.value = f"=SUM({total_col_letter}{table_data_start_row}:{total_col_letter}{table_data_end_row})"
+
+                # Store total row index for week summary
+                week_group_total_rows.append(current_row)
+
+                # Spacer row between barn group tables
+                current_row += 2
+
+            # --- SINGLE SUMMARY ROW AT THE END OF THE WEEK (รวมทุกเล้าประจำสัปดาห์) ---
+            if week_group_total_rows:
+                c_wk_tot_label = ws_barn.cell(row=current_row, column=1, value=f"รวมทุกเล้า ({wk_name})")
+                c_wk_tot_label.font = font_wk_tot
+                c_wk_tot_label.fill = fill_wk_tot
+                c_wk_tot_label.alignment = align_center
+                c_wk_tot_label.border = border_wk_tot
+
+                c_col = 2
+                for cat in categories:
+                    col_let = get_column_letter(c_col)
+                    refs = [f"{col_let}{r_idx}" for r_idx in week_group_total_rows]
+                    
+                    c_wk_cell = ws_barn.cell(row=current_row, column=c_col)
+                    c_wk_cell.font = font_wk_tot
+                    c_wk_cell.fill = fill_wk_tot
+                    c_wk_cell.alignment = align_right
+                    c_wk_cell.number_format = num_format
+                    c_wk_cell.border = border_wk_tot
+                    c_wk_cell.value = f"=SUM({', '.join(refs)})" if len(refs) > 1 else f"={refs[0]}"
+                    c_col += 1
+
+                # Week Grand Total Formula (Sum across categories for this week)
+                last_cat_letter = get_column_letter(c_col - 1)
+                c_wk_grand = ws_barn.cell(row=current_row, column=c_col)
+                c_wk_grand.font = font_wk_tot
+                c_wk_grand.fill = fill_wk_tot
+                c_wk_grand.alignment = align_right
+                c_wk_grand.number_format = num_format
+                c_wk_grand.border = border_wk_tot
+                c_wk_grand.value = f"=SUM(B{current_row}:{last_cat_letter}{current_row})"
 
                 current_row += 1
 
-            table_data_end_row = current_row - 1
-
-            # 4. Table Bottom Total Row
-            c_grp_tot_label = ws_barn.cell(row=current_row, column=1, value="รวม")
-            c_grp_tot_label.font = font_tot
-            c_grp_tot_label.alignment = align_center
-            c_grp_tot_label.border = border_tot
-
-            c_col = 2
-            for cat in grp_categories:
-                col_let = get_column_letter(c_col)
-                c_tot_cell = ws_barn.cell(row=current_row, column=c_col)
-                c_tot_cell.font = font_tot
-                c_tot_cell.alignment = align_right
-                c_tot_cell.number_format = num_format
-                c_tot_cell.border = border_tot
-                c_tot_cell.value = f"=SUM({col_let}{table_data_start_row}:{col_let}{table_data_end_row})"
-                c_col += 1
-
-            # Group Grand Total
-            last_cat_letter = get_column_letter(c_col - 1)
-            total_col_letter = get_column_letter(c_col)
-            c_grp_grand = ws_barn.cell(row=current_row, column=c_col)
-            c_grp_grand.font = font_tot
-            c_grp_grand.alignment = align_right
-            c_grp_grand.number_format = num_format
-            c_grp_grand.border = border_tot
-            c_grp_grand.value = f"=SUM({total_col_letter}{table_data_start_row}:{total_col_letter}{table_data_end_row})"
-
-            # Spacer rows between main group tables
-            current_row += 3
+            # Spacer rows between weeks
+            current_row += 2
 
         # Column Widths
-        ws_barn.column_dimensions['A'].width = max(18, max_col_width_a)
-        for c in range(2, 20):
+        ws_barn.column_dimensions['A'].width = max(22, max_col_width_a)
+        for c in range(2, tot_table_cols + 1):
             c_let = get_column_letter(c)
             ws_barn.column_dimensions[c_let].width = 16
 
