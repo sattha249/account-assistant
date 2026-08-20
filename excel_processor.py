@@ -2,6 +2,7 @@ import datetime
 import os
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from utils import normalize_category_name, category_key, is_same_category
 
 
 def get_unique_sheet_name(wb: openpyxl.Workbook, base_name: str = "สรุปยอด") -> str:
@@ -16,12 +17,70 @@ def get_unique_sheet_name(wb: openpyxl.Workbook, base_name: str = "สรุป�
     return f"{base_name}_({timestamp})"
 
 
+def scan_summary_items_dynamically(ws_sales: openpyxl.worksheet.worksheet.Worksheet) -> list:
+    """
+    Dynamically scans summary items from Column Q (Col 17) and Column R (Col 18) of sheet 'ขาย'.
+    Does NOT hardcode row counts, supporting any number of dynamic categories (more or fewer).
+    Normalizes whitespaces and detects yellow highlighted rows dynamically.
+    """
+    summary_items = []
+    max_r = ws_sales.max_row
+    empty_consecutive_count = 0
+
+    for r in range(2, max_r + 1):
+        cell_q = ws_sales.cell(row=r, column=17)
+        cell_r = ws_sales.cell(row=r, column=18)
+        
+        q_raw = cell_q.value
+        r_raw = cell_r.value
+
+        # Check yellow fill on cell Q or R
+        is_yellow = False
+        for c in (cell_q, cell_r):
+            if c.fill and c.fill.fill_type and c.fill.start_color and c.fill.start_color.rgb:
+                rgb_str = str(c.fill.start_color.rgb).upper()
+                if "FFC000" in rgb_str or "FFD700" in rgb_str or "YELLOW" in rgb_str:
+                    is_yellow = True
+                    break
+
+        clean_name = normalize_category_name(q_raw) if q_raw is not None else ""
+        c_key = category_key(clean_name)
+
+        # Stop condition: reached 'รวม' row
+        if c_key == "รวม":
+            summary_items.append({
+                "source_row": r,
+                "name": "รวม",
+                "key": "รวม",
+                "is_yellow": is_yellow
+            })
+            break
+
+        # Check for empty rows
+        if not clean_name and r_raw is None and not is_yellow:
+            empty_consecutive_count += 1
+            if empty_consecutive_count >= 5 and len(summary_items) > 0:
+                # Stop if 5 empty rows in a row after starting
+                break
+        else:
+            empty_consecutive_count = 0
+
+        summary_items.append({
+            "source_row": r,
+            "name": clean_name,
+            "key": c_key,
+            "is_yellow": is_yellow
+        })
+
+    return summary_items
+
+
 def add_summary_sheet(file_path: str) -> dict:
     """
     Processes the specified Excel file, creates a styled 'สรุปยอด' sheet (or timestamped version if duplicate),
-    populates summary data matching the farm accounting standards, and saves the file.
+    populates dynamic summary data matching farm accounting standards, and saves the file.
     
-    Returns a dictionary with status, sheet_name, file_path, and error.
+    Supports dynamic fields (any number of categories) and whitespace normalization.
     """
     if not os.path.exists(file_path):
         return {
@@ -43,32 +102,15 @@ def add_summary_sheet(file_path: str) -> dict:
 
         ws_sales = wb["ขาย"]
 
-        # Extract items from Q and R columns (Columns 17 & 18)
-        summary_items = []
+        # Dynamically extract summary items
+        summary_items = scan_summary_items_dynamically(ws_sales)
 
-        for r in range(2, 19):
-            cell_q = ws_sales.cell(row=r, column=17)
-            cell_r = ws_sales.cell(row=r, column=18)
-            
-            # Check yellow fill on cell Q or R
-            is_yellow = False
-            for c in (cell_q, cell_r):
-                if c.fill and c.fill.fill_type and c.fill.start_color and c.fill.start_color.rgb:
-                    rgb_str = str(c.fill.start_color.rgb).upper()
-                    if "FFC000" in rgb_str or "FFD700" in rgb_str or "YELLOW" in rgb_str:
-                        is_yellow = True
-                        break
-            
-            # Additional fallback check for known yellow row indices
-            if r in (9, 11, 13, 16):
-                is_yellow = True
-
-            item_name = str(cell_q.value).strip() if cell_q.value is not None else ""
-            summary_items.append({
-                "source_row": r,
-                "name": item_name,
-                "is_yellow": is_yellow
-            })
+        if not summary_items:
+            return {
+                "success": False,
+                "error": "ไม่พบข้อมูลประเภทสินค้า/สุกรในคอลัมน์สรุปย่อของชีท 'ขาย'",
+                "sheet_name": None
+            }
 
         # Determine target sheet name
         target_sheet_name = get_unique_sheet_name(wb, "สรุปยอด")
@@ -104,14 +146,19 @@ def add_summary_sheet(file_path: str) -> dict:
         ws_summary.cell(row=1, column=2).alignment = align_center
         ws_summary.cell(row=1, column=2).border = Border(left=thin_side, right=thick_side, top=thick_side, bottom=thick_side)
 
-        # Write Data Rows
+        max_name_len = 10
+
+        # Write Dynamic Data Rows
         current_row = 2
         for item in summary_items:
             src_row = item["source_row"]
             c_name = ws_summary.cell(row=current_row, column=1, value=item["name"])
             c_qty = ws_summary.cell(row=current_row, column=2)
 
-            is_total_row = (item["name"] == "รวม")
+            if item["name"]:
+                max_name_len = max(max_name_len, len(item["name"]))
+
+            is_total_row = (item["key"] == "รวม")
 
             if is_total_row:
                 c_name.font = font_total
@@ -140,8 +187,8 @@ def add_summary_sheet(file_path: str) -> dict:
 
             current_row += 1
 
-        # Adjust Column Widths
-        ws_summary.column_dimensions['A'].width = 24
+        # Adjust Column Widths Dynamically
+        ws_summary.column_dimensions['A'].width = max(24, max_name_len + 6)
         ws_summary.column_dimensions['B'].width = 16
 
         # Save workbook

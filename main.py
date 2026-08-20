@@ -99,7 +99,7 @@ def main_menu():
         
         console.print(menu_table)
         console.print()
-        
+        console.print("งานกูก็เยอะแยะ ให้กูมาทำเหี้ยอะไรก็ไม่รู้")
         choice = Prompt.ask("เลือกเมนูการทำงาน [0-1]", choices=["0", "1"], default="1")
         
         if choice == "1":
