@@ -69,25 +69,24 @@ def get_skipped_orange_rows(ws_sales: openpyxl.worksheet.worksheet.Worksheet, ma
 
 def parse_barn_string(barn_str, row_qty=None) -> list:
     """
-    Parses barn strings such as 'T6=2 , T4=1 , T5=1', 'N1 , T6', '1F1=12 , 1F2=14', 'T13=1 รวมรก'.
+    Parses barn strings such as 'T6=2 , T4=1 , T5=1', 'N1 , T6', '1F1=12 , 1F2=14', 'T13=1 รวมรก', 'T8=1 , N3=1 N1=3'.
+    Extracts all barn quantity patterns anywhere in the string regardless of missing commas.
     Returns list of tuples: [(sub_barn_id, quantity), ...]
     """
     if not barn_str:
         return []
-    parts = re.split(r'[,/]', str(barn_str))
+    matches = re.findall(r'([A-Za-z0-9]+)(?:\s*=\s*(\d+))?', str(barn_str))
     parsed = []
-    for p in parts:
-        p = p.strip()
-        if not p:
+    ignore_words = {'รวม', 'รวมรก', 'ขาย', 'ซาก', 'บาท', 'ตัว', 'KG', 'กิโล', 'เดือน', 'วัน'}
+    for sub_b, qty_str in matches:
+        sub_upper = sub_b.upper()
+        if sub_upper in ignore_words:
             continue
-        m = re.search(r'([A-Za-z0-9]+)\s*=\s*(\d+)', p)
-        if m:
-            parsed.append((m.group(1).upper(), int(m.group(2))))
+        if qty_str:
+            parsed.append((sub_upper, int(qty_str)))
         else:
-            m_simple = re.search(r'([A-Za-z0-9]+)', p)
-            if m_simple:
-                qty = int(row_qty) if (row_qty and isinstance(row_qty, (int, float)) and len(parts) == 1) else 1
-                parsed.append((m_simple.group(1).upper(), qty))
+            qty = int(row_qty) if (row_qty and isinstance(row_qty, (int, float)) and len(matches) == 1) else 1
+            parsed.append((sub_upper, qty))
     return parsed
 
 
@@ -319,6 +318,7 @@ def add_summary_sheet(file_path: str) -> dict:
         cell_total_hdr2.border = Border(left=thin_side, right=thick_side, top=thin_side, bottom=thick_side)
 
         max_name_len = 10
+        total_pigs_qty = 0
 
         # --- Data Rows (Rows 3..M+2) ---
         current_row = 3
@@ -340,9 +340,12 @@ def add_summary_sheet(file_path: str) -> dict:
                     if r in skipped_orange_rows:
                         continue
                     c_val = ws_sales.cell(row=r, column=5).value
+                    q_val = ws_sales.cell(row=r, column=4).value
                     clean_c = normalize_category_name(c_val)
                     if is_same_category(clean_c, cat["name"]):
                         valid_cell_refs.append(f"'ขาย'!D{r}")
+                        if isinstance(q_val, (int, float)):
+                            total_pigs_qty += int(q_val)
 
                 c_val = ws_summary.cell(row=current_row, column=col_idx)
                 c_val.font = font_data
@@ -404,10 +407,23 @@ def add_summary_sheet(file_path: str) -> dict:
         # Save workbook
         wb.save(file_path)
 
+        summary_lines = [
+            f"• สัปดาห์ทั้งหมด: {len(weeks)} สัปดาห์",
+            f"• ประเภทสุกร/สินค้า: {len(categories)} รายการ",
+            f"• ยอดขายรวมทั้งสิ้น: {total_pigs_qty:,} ตัว",
+            f"• บรรทัดสีส้มซ้ำที่ข้าม: {len(skipped_orange_rows)} บรรทัด"
+        ]
+        summary_text = "\n".join(summary_lines)
+
         return {
             "success": True,
             "sheet_name": target_sheet_name,
             "file_path": file_path,
+            "weeks_count": len(weeks),
+            "categories_count": len(categories),
+            "total_qty": total_pigs_qty,
+            "skipped_orange_count": len(skipped_orange_rows),
+            "summary_text": summary_text,
             "error": None
         }
 
@@ -431,6 +447,7 @@ def add_barn_summary_sheet(file_path: str) -> dict:
     summing up all barns in that week, broken down by category!
     Includes Orange Fill Duplicate Row Exclusion Rule.
     Includes all categories in every table, defaulting to 0 for empty cells.
+    Handles Merged Cells in Column N seamlessly.
     """
     if not os.path.exists(file_path):
         return {
@@ -452,6 +469,14 @@ def add_barn_summary_sheet(file_path: str) -> dict:
         ws_sales = wb["ขาย"]
         max_r = ws_sales.max_row
 
+        # Build merged cell lookup map for Column 14 (เล้า)
+        merged_n_map = {}
+        for rng in ws_sales.merged_cells.ranges:
+            if rng.min_col <= 14 <= rng.max_col:
+                top_val = ws_sales.cell(row=rng.min_row, column=14).value
+                for r in range(rng.min_row, rng.max_row + 1):
+                    merged_n_map[r] = (top_val, rng.min_row)
+
         # Detect skipped orange duplicate rows
         skipped_orange_rows = get_skipped_orange_rows(ws_sales, max_r)
 
@@ -467,13 +492,25 @@ def add_barn_summary_sheet(file_path: str) -> dict:
 
         # Structure: weekly_data[wk_name][main_group][sub_barn][category_key] = count
         weekly_data = {}
+        all_t_barns = set()
+        all_n_barns = set()
+        all_other_barns = set()
+        total_pigs_qty = 0
+
         for wk in weeks:
             weekly_data[wk["name"]] = {}
             for r in range(wk["start_row"], wk["end_row"] + 1):
                 if r in skipped_orange_rows:
                     continue
 
-                barn_str = ws_sales.cell(row=r, column=14).value # Column N: เล้า
+                # Handle Merged Cells in Column N
+                if r in merged_n_map:
+                    barn_str, min_r = merged_n_map[r]
+                    if r != min_r:
+                        continue
+                else:
+                    barn_str = ws_sales.cell(row=r, column=14).value
+
                 c_val = ws_sales.cell(row=r, column=5).value     # Column E: ประเภท
                 q_val = ws_sales.cell(row=r, column=4).value     # Column D: จำนวนตัว
 
@@ -486,6 +523,15 @@ def add_barn_summary_sheet(file_path: str) -> dict:
                 parsed_barns = parse_barn_string(barn_str, q_val)
                 for sub_b, b_qty in parsed_barns:
                     main_grp = get_main_barn_group(sub_b)
+                    if main_grp == "กลุ่มเล้า T":
+                        all_t_barns.add(sub_b)
+                    elif main_grp == "กลุ่มเล้า N":
+                        all_n_barns.add(sub_b)
+                    else:
+                        all_other_barns.add(sub_b)
+
+                    total_pigs_qty += b_qty
+
                     if main_grp not in weekly_data[wk["name"]]:
                         weekly_data[wk["name"]][main_grp] = {}
                     if sub_b not in weekly_data[wk["name"]][main_grp]:
@@ -702,10 +748,27 @@ def add_barn_summary_sheet(file_path: str) -> dict:
 
         wb.save(file_path)
 
+        total_sub_barns = len(all_t_barns) + len(all_n_barns) + len(all_other_barns)
+        summary_lines = [
+            f"• สัปดาห์ทั้งหมด: {len(weeks)} สัปดาห์",
+            f"• เล้าย่อยทั้งหมด: {total_sub_barns} เล้า (กลุ่ม T: {len(all_t_barns)}, กลุ่ม N: {len(all_n_barns)}, อื่นๆ: {len(all_other_barns)})",
+            f"• ยอดขายรวมทั้งสิ้น: {total_pigs_qty:,} ตัว",
+            f"• บรรทัดสีส้มซ้ำที่ข้าม: {len(skipped_orange_rows)} บรรทัด"
+        ]
+        summary_text = "\n".join(summary_lines)
+
         return {
             "success": True,
             "sheet_name": target_sheet_name,
             "file_path": file_path,
+            "weeks_count": len(weeks),
+            "total_sub_barns": total_sub_barns,
+            "t_barns_count": len(all_t_barns),
+            "n_barns_count": len(all_n_barns),
+            "other_barns_count": len(all_other_barns),
+            "total_qty": total_pigs_qty,
+            "skipped_orange_count": len(skipped_orange_rows),
+            "summary_text": summary_text,
             "error": None
         }
 

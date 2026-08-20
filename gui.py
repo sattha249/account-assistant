@@ -44,7 +44,7 @@ def get_rounded_pixmap(image_path: str, size: int = 76, corner_radius: int = 14)
 class AccountAssistantGUI(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("ระบบผู้ช่วยบัญชีและฟาร์มสุกร (Account Assistant - Signature Edition)")
+        self.setWindowTitle("น้องโปรแกรมเลี้ยงหมู (Account Assistant)")
         self.resize(780, 600)
         self.setMinimumSize(720, 540)
 
@@ -92,7 +92,7 @@ class AccountAssistantGUI(QMainWindow):
         title_label.setObjectName("HeaderTitle")
         title_label.setFont(QFont("Calibri", 20, QFont.Weight.Bold))
 
-        subtitle_label = QLabel("ระบบสรุปยอดขายสุกร และสรุปยอดแยกเล้าอัตโนมัติ (Desktop GUI)")
+        subtitle_label = QLabel("เลือกเมนูที่ต้องการได้เลยครับ")
         subtitle_label.setObjectName("HeaderSubtitle")
         subtitle_label.setFont(QFont("Calibri", 12))
 
@@ -342,9 +342,16 @@ class AccountAssistantGUI(QMainWindow):
         res = excel_processor.add_summary_sheet(file_path)
 
         if res["success"]:
-            msg = f"สร้างชีทสรุปยอดสำเร็จ!\n\nชื่อชีท: {res['sheet_name']}\nไฟล์: {res['file_path']}"
+            summary_info = res.get("summary_text", "")
+            msg = (
+                f"สร้างชีทสรุปยอดสำเร็จ!\n\n"
+                f"📑 ชื่อชีทที่ถูกสร้าง: {res['sheet_name']}\n"
+                f"📂 ไฟล์ที่บันทึก: {res['file_path']}\n\n"
+                f"📊 สรุปข้อมูลการประมวลผล:\n{summary_info}"
+            )
             self.log(f"✅ สำเร็จ! ชีทที่ถูกสร้าง: {res['sheet_name']}")
-            QMessageBox.information(self, "สำเร็จ", msg)
+            self.log(f"📊 สรุปข้อมูล:\n{summary_info}")
+            QMessageBox.information(self, "สำเร็จ (Success)", msg)
         else:
             self.log(f"❌ เกิดข้อผิดพลาด: {res['error']}")
             QMessageBox.critical(self, "เกิดข้อผิดพลาด", res["error"])
@@ -359,9 +366,16 @@ class AccountAssistantGUI(QMainWindow):
         res = excel_processor.add_barn_summary_sheet(file_path)
 
         if res["success"]:
-            msg = f"สร้างชีทสรุปยอดแยกเล้าสำเร็จ!\n\nชื่อชีท: {res['sheet_name']}\nไฟล์: {res['file_path']}"
+            summary_info = res.get("summary_text", "")
+            msg = (
+                f"สร้างชีทสรุปยอดแยกเล้าสำเร็จ!\n\n"
+                f"📑 ชื่อชีทที่ถูกสร้าง: {res['sheet_name']}\n"
+                f"📂 ไฟล์ที่บันทึก: {res['file_path']}\n\n"
+                f"📊 สรุปข้อมูลการประมวลผล:\n{summary_info}"
+            )
             self.log(f"✅ สำเร็จ! ชีทที่ถูกสร้าง: {res['sheet_name']}")
-            QMessageBox.information(self, "สำเร็จ", msg)
+            self.log(f"📊 สรุปข้อมูล:\n{summary_info}")
+            QMessageBox.information(self, "สำเร็จ (Success)", msg)
         else:
             self.log(f"❌ เกิดข้อผิดพลาด: {res['error']}")
             QMessageBox.critical(self, "เกิดข้อผิดพลาด", res["error"])

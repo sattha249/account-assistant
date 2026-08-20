@@ -74,10 +74,13 @@ def handle_menu_1():
     result = excel_processor.add_summary_sheet(selected_file)
 
     if result["success"]:
+        summary_text = result.get("summary_text", "")
         success_msg = (
             f"[bold green]สร้างชีทสรุปยอดสำเร็จ![/bold green]\n\n"
             f"[white]ชื่อชีทที่ถูกสร้าง:[/white] [bold yellow]{result['sheet_name']}[/bold yellow]\n"
-            f"[white]ไฟล์ที่บันทึก:[/white] [cyan]{result['file_path']}[/cyan]"
+            f"[white]ไฟล์ที่บันทึก:[/white] [cyan]{result['file_path']}[/cyan]\n\n"
+            f"[bold cyan]📊 สรุปข้อมูลการประมวลผล:[/bold cyan]\n"
+            f"[white]{summary_text}[/white]"
         )
         console.print(Panel(success_msg, border_style="green", title="[bold green]สำเร็จ (Success)[/bold green]"))
     else:
@@ -135,10 +138,13 @@ def handle_menu_2():
     result = excel_processor.add_barn_summary_sheet(selected_file)
 
     if result["success"]:
+        summary_text = result.get("summary_text", "")
         success_msg = (
             f"[bold green]สร้างชีทสรุปยอดแยกเล้าสำเร็จ![/bold green]\n\n"
             f"[white]ชื่อชีทที่ถูกสร้าง:[/white] [bold yellow]{result['sheet_name']}[/bold yellow]\n"
-            f"[white]ไฟล์ที่บันทึก:[/white] [cyan]{result['file_path']}[/cyan]"
+            f"[white]ไฟล์ที่บันทึก:[/white] [cyan]{result['file_path']}[/cyan]\n\n"
+            f"[bold cyan]📊 สรุปข้อมูลการประมวลผล:[/bold cyan]\n"
+            f"[white]{summary_text}[/white]"
         )
         console.print(Panel(success_msg, border_style="green", title="[bold green]สำเร็จ (Success)[/bold green]"))
     else:
